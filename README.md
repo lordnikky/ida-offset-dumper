@@ -11,3 +11,10 @@ Licensed under Creative Commons Attribution-NonCommercial 4.0 International Publ
 That means that selling any code provided in this repository is **fully illegal**, and **if violated legal actions may be taken**.
 
 Clear credit must be present if code from this repository is used/referenced.
+
+
+Contact me:
+
+discord: `lordnikky`
+
+email: [nikky@nikky.me](mailto:nikky@nikky.me)
