@@ -1,0 +1,31 @@
+Creative Commons Attribution-NonCommercial 4.0 International Public License
+
+Copyright (c) 2026 lordnikky (https://github.com/lordnikky)
+
+By exercising the Licensed Rights (defined below), You accept and agree to be bound by the terms and conditions of this Creative Commons Attribution-NonCommercial 4.0 International Public License ("Public License"). To the extent this Public License may be interpreted as a contract, You are granted the Licensed Rights in consideration of Your acceptance of these terms and conditions, and the Licensor grants You such rights in consideration of benefits the Licensor receives from making the Licensed Material available under these terms and conditions.
+
+Section 1 - Definitions.
+a. Copyright and Similar Rights means copyright and/or similar rights closely related to copyright including, without limitation, performance, broadcast, sound recording, and Sui Generis Database Rights, without regard to how the rights are labeled or categorized.
+b. Licensed Material means the software, code, documentation, or other material to which the Licensor applied this Public License.
+c. Licensor means the individual(s) or entity(ies) granting rights under this Public License (lordnikky).
+d. NonCommercial means not primarily intended for or directed toward commercial advantage or monetary compensation.
+e. You means the individual or entity exercising the Licensed Rights under this Public License.
+
+Section 2 - Scope.
+a. License grant.
+   1. Subject to the terms and conditions of this Public License, the Licensor hereby grants You a worldwide, royalty-free, non-sublicensable, non-exclusive, irrevocable license to exercise the Licensed Rights in the Licensed Material to reproduce, share, adapt, or modify the Material for NonCommercial purposes only.
+
+Section 3 - License Conditions.
+Your exercise of the Licensed Rights is expressly made subject to the following conditions.
+
+a. Attribution.
+   1. If You Share the Licensed Material (including in modified or rebranded form), You must:
+      A. retain identification of the creator ("lordnikky") and a direct link back to the original source repository (https://github.com/lordnikky/ida-offset-dumper).
+      B. retain a copyright notice and a notice that refers to this Public License.
+      C. indicate if You modified the Licensed Material and retain an indication of any previous modifications.
+
+b. NonCommercial.
+   1. You may not exercise the Licensed Rights in any manner that is primarily intended for or directed toward commercial advantage or monetary compensation. Selling, paywalling, or commercial monetization of this material without express written consent from the Licensor is strictly prohibited.
+
+Section 4 - Disclaimer of Warranties and Limitation of Liability.
+The Licensor offers the Licensed Material as-is and as-available, and makes no representations or warranties of any kind concerning the Licensed Material. The Licensor disclaims all liability for how this documentation, code, or data is utilized.
