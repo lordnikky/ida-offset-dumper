@@ -1707,9 +1707,9 @@ def dump_engine():
             if len(hit) == 1:
                 ngc = hit[0]
     if ngc is not None:
-        print("LuaMNewGco = REBASE(0x%X)" % (ngc - BASE))
+        print("NewPage = REBASE(0x%X)" % (ngc - BASE))
     else:
-        print("LuaMNewGco: NO CALL")
+        print("NewPage: NO CALL")
     kt = None
     ks = find_str("Trying to call method on object of type")
     if ks is not None:
