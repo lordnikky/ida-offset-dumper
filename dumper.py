@@ -2069,6 +2069,7 @@ def dump_engine():
         print("GetPropertyDescriptor: NO STRING")
     print("--- engine misc ---")
     dump_func("ScriptContextResume", "resume script in this context")
+    dump_identity()
     print("--- taskscheduler ---")
     ap = find_str("AppInitializer", exact=True)
     if ap is not None:
@@ -3095,6 +3096,148 @@ def dump_luau_execute():
     return best
 
 
+NATIVE_STRING_ANCHORS = {
+    "NativeDestroyString": "doNotFallbackToBaselineRepresentation",
+    "NativeVerify": "bytecode type version mismatch",
+}
+_VERIFY_FLAG_RE = (r"\*\s*\(\s*_\w+\s*\*\s*\)\s*\(\s*\*\s*\(\s*_\w+\s*\*\s*\)\s*\([^()]*\)"
+                   r"\s*\+\s*(0x[0-9A-Fa-f]+|\d+)\s*LL?\s*\)\s*&\s*=")
+_VERSION_TABLE_MARK = "LibMP"
+
+
+def _str_xref_funcs(needle):
+    out = []
+    for s in idautils.Strings():
+        if needle in str(s):
+            for x in idautils.XrefsTo(s.ea, 0):
+                f = ida_funcs.get_func(x.frm)
+                if f and f.start_ea not in out:
+                    out.append(f.start_ea)
+    return out
+
+
+def _call_counts(fstart):
+    counts = {}
+    for ea in idautils.FuncItems(fstart):
+        if idc.print_insn_mnem(ea) != "call":
+            continue
+        tgt = idc.get_operand_value(ea, 0)
+        g = ida_funcs.get_func(tgt)
+        if g:
+            counts[g.start_ea] = counts.get(g.start_ea, 0) + 1
+    return counts
+
+
+def _find_destroystring():
+    sets = []
+    for f0 in _str_xref_funcs(NATIVE_STRING_ANCHORS["NativeDestroyString"]):
+        sets.append({c for c, n in _call_counts(f0).items() if n >= 8})
+    if not sets:
+        return None
+    common = set.intersection(*sets)
+    if not common:
+        return None
+    best = None
+    for f0 in _str_xref_funcs(NATIVE_STRING_ANCHORS["NativeDestroyString"]):
+        for c, n in _call_counts(f0).items():
+            if c in common and (best is None or n > best[1]):
+                best = (c, n)
+    return best
+
+
+def _find_verify():
+    for f0 in _str_xref_funcs(NATIVE_STRING_ANCHORS["NativeVerify"]):
+        try:
+            txt = str(ida_hexrays.decompile(f0))
+        except Exception:
+            continue
+        for m in re.finditer(r"\(\s*unsigned int\)\s*(sub_[0-9A-Fa-f]+)\s*\(([^;]*?)\)\s*!=\s*1\s*\)", txt):
+            nm = idc.get_name_ea_simple(m.group(1))
+            g = ida_funcs.get_func(nm)
+            if g:
+                return g.start_ea
+    return None
+
+
+def _find_key(verify):
+    if verify is None:
+        return None
+    for callee in _call_counts(verify):
+        try:
+            txt = str(ida_hexrays.decompile(callee))
+        except Exception:
+            continue
+        if "unk_" not in txt:
+            continue
+        for m in re.finditer(r"&(unk_[0-9A-Fa-f]+)", txt):
+            e = idc.get_name_ea_simple(m.group(1))
+            if e == idc.BADADDR:
+                continue
+            blob = ida_bytes.get_bytes(e, 64) or b""
+            if _VERSION_TABLE_MARK.encode() in blob:
+                return callee
+    return None
+
+
+
+IDENTITY_ANCHOR = "may only be instantiated by CoreScripts"
+_TLS_RESOLVE_RE = r"(sub_[0-9A-Fa-f]+)\(\s*(?:\(a1:\s*)?(qword_[0-9A-Fa-f]+)\s*\)"
+
+
+def _find_identity():
+    for f0 in _str_xref_funcs(IDENTITY_ANCHOR):
+        try:
+            txt = str(ida_hexrays.decompile(f0))
+        except Exception:
+            continue
+        for m in re.finditer(_TLS_RESOLVE_RE, txt):
+            res = idc.get_name_ea_simple(m.group(1))
+            ptr = idc.get_name_ea_simple(m.group(2))
+            if res == idc.BADADDR or ptr == idc.BADADDR:
+                continue
+            if ida_funcs.get_func(res) is not None and ida_funcs.get_func(ptr) is None:
+                return res, ptr
+    return None, None
+
+
+def dump_identity():
+    res, ptr = _find_identity()
+    if res is None:
+        print("IdentityPtr: NO TLS RESOLVE")
+        return
+    print("IdentityPtr = REBASE(0x%X)" % (ptr - BASE))
+    print("GetTlsPointer = REBASE(0x%X)" % (res - BASE))
+
+
+def dump_natives():
+    print("--- native ---")
+    ds = _find_destroystring()
+    if ds:
+        print("NativeDestroyString = REBASE(0x%X)" % (ds[0] - BASE))
+        print("NativeDestroyStringRepeatedIn = %d" % ds[1])
+    else:
+        print("NativeDestroyString: NO TAIL CALLEE")
+    vf = _find_verify()
+    if vf:
+        print("NativeVerify = REBASE(0x%X)" % (vf - BASE))
+        try:
+            vtxt = str(ida_hexrays.decompile(vf))
+        except Exception:
+            vtxt = ""
+        m = re.search(_VERIFY_FLAG_RE, vtxt)
+        if m:
+            print("NativeVerifyFlagOffset = 0x%X" % int(m.group(1), 0))
+        else:
+            print("NativeVerifyFlagOffset: NO SHAPE")
+        key = _find_key(vf)
+        if key:
+            print("NativeKey = REBASE(0x%X)" % (key - BASE))
+        else:
+            print("NativeKey: NO TABLE CALLEE")
+    else:
+        print("NativeVerify: NO NE1 CALLEE")
+
+
 def dump_luau_core():
     print("--- luau ---")
     if not _resolved("LuaGRunError"):
@@ -3105,6 +3248,7 @@ def dump_luau_core():
         dump_lua_opushfstring()
     if not _resolved("LuauExecute"):
         dump_luau_execute()
+    dump_natives()
 
 
 def dump_remote():
@@ -3577,7 +3721,7 @@ def _hpp_type(nsn, name):
     return _TYPE_BY_NAME.get(name, "std::size_t")
 
 
-_NO_REBASE = set(_TYPE_BY_NAME) | {"RequireBypass", "CapabilityStruct"}
+_NO_REBASE = set(_TYPE_BY_NAME) | {"RequireBypass", "CapabilityStruct", "NativeVerifyFlagOffset"}
 
 
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(\.\d+)?$")
