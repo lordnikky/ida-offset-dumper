@@ -18,3 +18,5 @@ Contact me:
 discord: `lordnikky`
 
 email: [nikky@nikky.me](mailto:nikky@nikky.me)
+
+October 19 2026: Currently there is 1 active violation of license, it all has been documented.
