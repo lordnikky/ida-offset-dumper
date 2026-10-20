@@ -1,13 +1,9 @@
 import builtins
-import os
-import re
-
 import idautils
 import ida_funcs
 import ida_nalt
 import ida_bytes
 import ida_ua
-import ida_hexrays
 import idc
 
 BASE = ida_nalt.get_imagebase()
@@ -182,21 +178,6 @@ def dump_symbol(name, symbol):
             return ea
     print("%s: NO SYMBOL" % name)
     return None
-
-
-def dump_slot_before(name, symbol, delta):
-    for ea, nm in idautils.Names():
-        if nm == symbol:
-            addr = ea - delta
-            f = func_of(int(ida_bytes.get_qword(addr)))
-            if f is None:
-                print("%s: slot 0x%X not in func" % (name, addr))
-                return None
-            print("%s = REBASE(0x%X)" % (name, f - BASE))
-            return f
-    print("%s: NO SYMBOL" % name)
-    return None
-
 
 def _is_offset_xref(x):
     try:
@@ -502,20 +483,6 @@ def dump_streams():
     print("StreamCreate = REBASE(0x%X)" % (_as_func(create) - BASE) if create is not None else "StreamCreate: NO CALL")
     print("StreamAppend = REBASE(0x%X)" % (_as_func(append) - BASE) if append is not None else "StreamAppend: NO CALL")
     print("StreamDestroy = REBASE(0x%X)" % (_as_func(destroy) - BASE) if destroy is not None else "StreamDestroy: NO CALL")
-
-
-def dump_caller(name, target):
-    callers = sorted(x.frm for x in idautils.XrefsTo(target) if x.iscode)
-    if not callers:
-        print("%s: NO CALLERS" % name)
-        return None
-    f = func_of(callers[0])
-    if f is None:
-        print("%s: caller 0x%x not in func" % (name, callers[0]))
-        return None
-    print("%s = REBASE(0x%X)" % (name, f - BASE))
-    return f
-
 
 def find_vtable(mangled):
     for ea, name in idautils.Names():
@@ -923,18 +890,6 @@ def _data_range():
     seg = ida_segment.get_segm_by_name(".data")
     return (int(seg.start_ea), int(seg.end_ea))
 
-
-def _str_eas():
-    import ida_strlist
-    out = set()
-    qty = ida_strlist.get_strlist_qty()
-    si = ida_strlist.string_info_t()
-    for i in range(qty):
-        if ida_strlist.get_strlist_item(si, i):
-            out.add(si.ea)
-    return out
-
-
 def _func_refs_str(fstart, targets):
     f = ida_funcs.get_func(fstart)
     if not f:
@@ -951,23 +906,6 @@ def _func_refs_str(fstart, targets):
                 return True
         ea += insn.size if insn.size else 1
     return False
-
-
-def _has_calls(fstart):
-    f = ida_funcs.get_func(fstart)
-    if not f:
-        return True
-    ea = f.start_ea
-    while ea < f.end_ea:
-        insn = ida_ua.insn_t()
-        if not ida_ua.decode_insn(insn, ea):
-            ea += 1
-            continue
-        if insn.get_canon_mnem() == "call":
-            return True
-        ea += insn.size if insn.size else 1
-    return False
-
 
 def _vararg_prologue(fstart):
     f = ida_funcs.get_func(fstart)
@@ -2304,13 +2242,6 @@ def _anchor_any(patterns, n=1):
             f = _anchor_func(p, n, False)
         if f is not None:
             return f
-    return None
-
-
-def _slot_before(symbol, delta):
-    for ea, nm in idautils.Names():
-        if nm == symbol:
-            return func_of(int(ida_bytes.get_qword(ea - delta)))
     return None
 
 
@@ -3866,7 +3797,7 @@ def dump_hpp():
             here = os.path.dirname(ida_nalt.get_input_file_path())
         except Exception:
             here = os.getcwd()
-    path = os.path.join(here, "IDAD DUMPER.hpp")
+    path = os.path.join(here, "IDA DUMPER.hpp")
     try:
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(out) + "\n")
