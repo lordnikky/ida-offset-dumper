@@ -608,30 +608,30 @@ def _firemouse_scan(fstart):
         oo = [ni[t] for t in range(6) if ni[t].type != ida_ua.o_void]
         if not oo or oo[0].type != ida_ua.o_near:
             continue
-        has312 = False
-        has313 = False
+        has304 = False
+        has305 = False
         for k in range(max(0, i - 12), i):
             m2 = lst[k][1].get_canon_mnem()
             o2 = [lst[k][1][t] for t in range(6) if lst[k][1][t].type != ida_ua.o_void]
             if m2 in ("test", "cmp"):
                 for o in o2:
-                    if o.type == ida_ua.o_displ and o.addr == 312:
-                        has312 = True
-                    if o.type == ida_ua.o_displ and o.addr == 313:
-                        has313 = True
+                    if o.type == ida_ua.o_displ and o.addr == 304:
+                        has304 = True
+                    if o.type == ida_ua.o_displ and o.addr == 305:
+                        has305 = True
             elif m2 == "mov" and len(o2) == 2 and o2[0].type == ida_ua.o_reg and o2[1].type == ida_ua.o_displ:
-                if o2[1].addr == 312:
-                    has312 = True
-                if o2[1].addr == 313:
-                    has313 = True
-        if has312 and fire is None:
+                if o2[1].addr == 304:
+                    has304 = True
+                if o2[1].addr == 305:
+                    has305 = True
+        if has304 and fire is None:
             for k in range(i + 1, min(len(lst), i + 8)):
                 m2 = lst[k][1].get_canon_mnem()
                 o2 = [lst[k][1][t] for t in range(6) if lst[k][1][t].type != ida_ua.o_void]
-                if m2 == "mov" and len(o2) == 2 and o2[0].type == ida_ua.o_displ and o2[0].addr == 312:
+                if m2 == "mov" and len(o2) == 2 and o2[0].type == ida_ua.o_displ and o2[0].addr == 304:
                     fire = oo[0].addr
                     break
-        if has313 and right is None:
+        if has305 and right is None:
             right = oo[0].addr
         if fire is not None and right is not None:
             break
@@ -1135,6 +1135,92 @@ def dump_lual():
         print("LuaLGetMetafield: NO CHAIN")
 
 
+def _facet_strings():
+    import ida_strlist, ida_bytes
+    out = set()
+    qty = ida_strlist.get_strlist_qty()
+    si = ida_strlist.string_info_t()
+    for i in range(qty):
+        if not ida_strlist.get_strlist_item(si, i):
+            continue
+        raw = ida_bytes.get_strlit_contents(si.ea, si.length, si.type)
+        if raw == b"Invalid Facet Access":
+            out.add(si.ea)
+    return out
+
+
+def _guard_fallthrough_call(fstart):
+    items = list(idautils.FuncItems(fstart))
+    for i, ea in enumerate(items):
+        insn = ida_ua.insn_t()
+        if not ida_ua.decode_insn(insn, ea):
+            continue
+        if insn.get_canon_mnem() != "cmp":
+            continue
+        ops = [insn[t] for t in range(6) if insn[t].type != ida_ua.o_void]
+        if len(ops) != 2 or ops[1].type != ida_ua.o_imm or (ops[1].value & 0xFFFFFFFFFFFFFFFF) != 3:
+            continue
+        guard = False
+        for k in range(max(0, i - 6), i):
+            m2 = ida_ua.insn_t()
+            if not ida_ua.decode_insn(m2, items[k]):
+                continue
+            if m2.get_canon_mnem() != "mov":
+                continue
+            o2 = [m2[t] for t in range(6) if m2[t].type != ida_ua.o_void]
+            if len(o2) == 2 and any(o.type == ida_ua.o_displ and o.addr == 0x1548 for o in o2):
+                guard = True
+                break
+        if not guard:
+            continue
+        for j in range(i + 1, min(len(items), i + 8)):
+            nj = ida_ua.insn_t()
+            if not ida_ua.decode_insn(nj, items[j]):
+                continue
+            if nj.get_canon_mnem() != "call":
+                continue
+            oo = [nj[t] for t in range(6) if nj[t].type != ida_ua.o_void]
+            if oo and oo[0].type == ida_ua.o_near:
+                return oo[0].addr
+    return None
+
+
+def _find_getglobalstate_by_shape(facet):
+    seen = set()
+    for fe in sorted(facet):
+        for x in idautils.XrefsTo(fe):
+            f = ida_funcs.get_func(x.frm)
+            if f is None or f.start_ea in seen:
+                continue
+            seen.add(f.start_ea)
+            if f.end_ea - f.start_ea > 0x100:
+                continue
+            items = list(idautils.FuncItems(f.start_ea))
+            add1a8 = False
+            call_after = False
+            add18 = False
+            xors = 0
+            for i, ea in enumerate(items):
+                m = idc.print_insn_mnem(ea)
+                if m == "add":
+                    for n in range(3):
+                        if idc.get_operand_type(ea, n) != ida_ua.o_imm:
+                            continue
+                        v = idc.get_operand_value(ea, n)
+                        if v == 0x1A8:
+                            add1a8 = True
+                            for j in range(i + 1, min(len(items), i + 3)):
+                                if idc.print_insn_mnem(items[j]) == "call":
+                                    call_after = True
+                        elif v == 0x18:
+                            add18 = True
+                elif m == "xor":
+                    xors += 1
+            if add1a8 and call_after and add18 and xors >= 2:
+                return f.start_ea
+    return None
+
+
 def dump_engine():
     import ida_segment
     print("--- luau ---")
@@ -1221,56 +1307,34 @@ def dump_engine():
                 print("BytecodeVerificationTableA: NO TABLE LEA")
     else:
         print("BytecodeVerificationTableA: NO STRING")
-    av = find_str("assignVal")
-    if av is not None:
-        xs = sorted(x.frm for x in idautils.XrefsTo(av))
-        if len(xs) >= 7:
-            hf = ida_funcs.get_func(xs[6])
+    facet = _facet_strings()
+    got = None
+    s = find_str("The schema may only be set once.", exact=True)
+    if s is None:
+        s = find_str("The schema may only be set once")
+    if s is not None:
+        xs = sorted(x.frm for x in idautils.XrefsTo(s))
+        if xs:
+            hf = ida_funcs.get_func(xs[0])
             if hf is not None:
-                import ida_strlist, ida_bytes
-                facet = set()
-                qty = ida_strlist.get_strlist_qty()
-                si = ida_strlist.string_info_t()
-                for i in range(qty):
-                    if not ida_strlist.get_strlist_item(si, i):
+                for ea in idautils.FuncItems(hf.start_ea):
+                    if idc.print_insn_mnem(ea) != "call":
                         continue
-                    raw = ida_bytes.get_strlit_contents(si.ea, si.length, si.type)
-                    if raw == b"Invalid Facet Access":
-                        facet.add(si.ea)
-                got = None
-                ea = hf.start_ea
-                while ea < hf.end_ea and got is None:
-                    insn = ida_ua.insn_t()
-                    if not ida_ua.decode_insn(insn, ea):
-                        ea += 1
+                    tgt = idc.get_operand_value(ea, 0)
+                    g = ida_funcs.get_func(tgt)
+                    if g is None or not _func_refs_str(tgt, facet):
                         continue
-                    if insn.get_canon_mnem() == "cmp":
-                        ops = [insn[j] for j in range(6) if insn[j].type != ida_ua.o_void]
-                        if len(ops) == 2 and ops[0].type == ida_ua.o_reg and ops[1].type == ida_ua.o_imm and (ops[1].value & 0xFFFFFFFFFFFFFFFF) == 3:
-                            sa = ea + insn.size
-                            for _ in range(12):
-                                s2 = ida_ua.insn_t()
-                                if not ida_ua.decode_insn(s2, sa):
-                                    break
-                                if s2.get_canon_mnem() == "call":
-                                    for k in range(6):
-                                        op = s2[k]
-                                        if op.type == ida_ua.o_near and _func_refs_str(op.addr, facet):
-                                            got = op.addr
-                                            break
-                                    break
-                                sa += s2.size
-                    ea += insn.size if insn.size else 1
-                if got is not None:
-                    print("GetGlobalState = REBASE(0x%X)" % (got - BASE))
-                else:
-                    print("GetGlobalState: NO GUARD-CALL")
-            else:
-                print("GetGlobalState: HOST NOFUNC")
-        else:
-            print("GetGlobalState: only %d assignVal xrefs" % len(xs))
+                    got = _guard_fallthrough_call(g.start_ea)
+                    if got is not None:
+                        break
+                if got is None:
+                    got = _guard_fallthrough_call(hf.start_ea)
+    if got is None and facet:
+        got = _find_getglobalstate_by_shape(facet)
+    if got is not None:
+        print("GetGlobalState = REBASE(0x%X)" % (got - BASE))
     else:
-        print("GetGlobalState: NO STRING")
+        print("GetGlobalState: NO GUARD-CALL")
     prt = None
     if PUSHFSTRING is not None:
         pff = ida_funcs.get_func(PUSHFSTRING)
@@ -1768,96 +1832,47 @@ def dump_engine():
         print("GetCapabilities: NO MASK HIT")
     structcap = None
     if pick is not None:
-        wrap = None
         for x in idautils.XrefsTo(pick):
             cf = ida_funcs.get_func(x.frm)
             if cf is None:
                 continue
-            ea = cf.start_ea
-            while ea < cf.end_ea and wrap is None:
+            items = list(idautils.FuncItems(cf.start_ea))
+            for i, ea in enumerate(items):
                 insn = ida_ua.insn_t()
                 if not ida_ua.decode_insn(insn, ea):
-                    ea += 1
                     continue
-                if insn.get_canon_mnem() == "and":
-                    ops = [insn[j] for j in range(6) if insn[j].type != ida_ua.o_void]
-                    if len(ops) == 2 and ops[0].type == ida_ua.o_reg and ops[1].type == ida_ua.o_imm and (ops[1].value & 0xFFFFFFFF) == 0xFFFFFF00:
-                        wrap = cf.start_ea
-                ea += insn.size if insn.size else 1
-            if wrap is not None:
+                if insn.get_canon_mnem() != "call":
+                    continue
+                ops = [insn[j] for j in range(6) if insn[j].type != ida_ua.o_void]
+                if not ops or ops[0].type != ida_ua.o_near or ops[0].addr != pick:
+                    continue
+                merged = {0}
+                for k in range(i + 1, min(len(items), i + 25)):
+                    i2 = ida_ua.insn_t()
+                    if not ida_ua.decode_insn(i2, items[k]):
+                        continue
+                    m = i2.get_canon_mnem()
+                    o2 = [i2[j] for j in range(6) if i2[j].type != ida_ua.o_void]
+                    if m == "mov" and len(o2) == 2 and o2[0].type == ida_ua.o_reg:
+                        if o2[1].type == ida_ua.o_reg and o2[1].reg in merged:
+                            merged.add(o2[0].reg)
+                        else:
+                            merged.discard(o2[0].reg)
+                    elif m == "or" and len(o2) == 2 and o2[0].type == ida_ua.o_reg and o2[1].type == ida_ua.o_reg:
+                        if o2[1].reg in merged or o2[0].reg in merged:
+                            merged.add(o2[0].reg)
+                    elif m == "mov" and len(o2) == 2 and o2[0].type == ida_ua.o_displ and o2[1].type == ida_ua.o_reg and o2[1].reg in merged:
+                        if o2[0].reg not in (4, 5) and 0 < o2[0].addr < 0x1000:
+                            structcap = o2[0].addr
+                            break
+                if structcap is not None:
+                    break
+            if structcap is not None:
                 break
-        if wrap is not None:
-            wf = ida_funcs.get_func(wrap)
-            lst = []
-            for h in idautils.Heads(wf.start_ea, wf.end_ea):
-                ni = ida_ua.insn_t()
-                if ida_ua.decode_insn(ni, h):
-                    lst.append(ni)
-            arg2 = None
-            for ni in lst[:15]:
-                oo = [ni[t] for t in range(6) if ni[t].type != ida_ua.o_void]
-                if ni.get_canon_mnem() == "mov" and len(oo) == 2 and oo[0].type == ida_ua.o_reg and oo[1].type == ida_ua.o_reg and oo[1].reg == 2:
-                    arg2 = oo[0].reg
-                    break
-            rm = None
-            ai = None
-            for n, ni in enumerate(lst):
-                if ni.get_canon_mnem() != "and":
-                    continue
-                oo = [ni[t] for t in range(6) if ni[t].type != ida_ua.o_void]
-                if len(oo) == 2 and oo[0].type == ida_ua.o_reg and oo[1].type == ida_ua.o_imm and (oo[1].value & 0xFFFFFFFF) == 0xFFFFFF00:
-                    rm = oo[0].reg
-                    ai = n
-                    break
-            ra = None
-            oi = None
-            if ai is not None:
-                for n in range(ai + 1, len(lst)):
-                    ni = lst[n]
-                    if ni.get_canon_mnem() != "or":
-                        continue
-                    oo = [ni[t] for t in range(6) if ni[t].type != ida_ua.o_void]
-                    if len(oo) == 2 and oo[0].type == ida_ua.o_reg and oo[1].type == ida_ua.o_reg and (oo[0].reg == rm or oo[1].reg == rm):
-                        ra = oo[1].reg if oo[0].reg == rm else oo[0].reg
-                        oi = n
-                        break
-            kk = None
-            sp = None
-            if oi is not None:
-                for n in range(oi + 1, len(lst)):
-                    ni = lst[n]
-                    if ni.get_canon_mnem() != "mov":
-                        continue
-                    oo = [ni[t] for t in range(6) if ni[t].type != ida_ua.o_void]
-                    if len(oo) == 2 and oo[0].type == ida_ua.o_displ and oo[0].reg == 4 and oo[1].type == ida_ua.o_reg and oo[1].reg == ra:
-                        kk = oo[0].addr
-                        sp = n
-                        break
-            xx = None
-            ld = None
-            if sp is not None:
-                for n in range(sp + 1, len(lst)):
-                    ni = lst[n]
-                    if ni.get_canon_mnem() != "movups":
-                        continue
-                    oo = [ni[t] for t in range(6) if ni[t].type != ida_ua.o_void]
-                    if len(oo) == 2 and oo[0].type == ida_ua.o_reg and oo[1].type == ida_ua.o_displ and oo[1].reg == 4 and oo[1].addr == kk:
-                        xx = oo[0].reg
-                        ld = n
-                        break
-            if ld is not None:
-                for n in range(ld + 1, len(lst)):
-                    ni = lst[n]
-                    if ni.get_canon_mnem() != "movups":
-                        continue
-                    oo = [ni[t] for t in range(6) if ni[t].type != ida_ua.o_void]
-                    if len(oo) == 2 and oo[0].type == ida_ua.o_displ and oo[0].reg == arg2 and oo[1].type == ida_ua.o_reg and oo[1].reg == xx:
-                        structcap = oo[0].addr
-                        break
     if structcap is not None:
         print("Capability = 0x%X" % structcap)
     else:
-        print("Capability: NO MERGE WALK")
+        print("Capability: NO MERGE STORE")
     print("--- classdescriptor ---")
     ph3 = find_str("data_model_service_init_part3_begin")
     if ph3 is not None:
@@ -2851,6 +2866,81 @@ def dump_luau_extras():
     dump_lea_after_movsxd("LuaTTypeNames", "no value")
     dump_metatable_locked()
     dump_castargs()
+    dump_luau_anchors()
+
+
+def _anchor_func(anchor, index=0, exact=True):
+    s = find_str(anchor, exact=exact)
+    if s is None:
+        return None
+    xs = sorted(x.frm for x in idautils.XrefsTo(s))
+    if len(xs) <= index:
+        return None
+    return ida_funcs.get_func(xs[index])
+
+
+def dump_luau_anchors():
+    free = None
+    hf = _anchor_func("Failed to create Lua state")
+    if hf is not None:
+        try:
+            txt = str(ida_hexrays.decompile(hf.start_ea))
+        except Exception:
+            txt = ""
+        i = txt.find("Failed to create Lua state")
+        m = re.search(r"\b(byte|word|dword|qword)_([0-9A-Fa-f]+)\b", txt[i:]) if i >= 0 else None
+        if m:
+            g = idc.get_name_ea_simple("%s_%s" % (m.group(1), m.group(2)))
+            if g != idc.BADADDR:
+                gx = sorted(x.frm for x in idautils.XrefsTo(g))
+                if len(gx) > 1:
+                    sw = ida_funcs.get_func(gx[1])
+                    if sw is not None:
+                        try:
+                            st = str(ida_hexrays.decompile(sw.start_ea))
+                        except Exception:
+                            st = ""
+                        cm = re.search(r"case\s+0xF\s*:\s*(?:\n\s*)?(?:return\s+)?(sub_[0-9A-Fa-f]+)\(", st)
+                        if cm:
+                            free = idc.get_name_ea_simple(cm.group(1))
+    if free is not None:
+        print("LuaFFreeProto = REBASE(0x%X)" % (free - BASE))
+    else:
+        print("LuaFFreeProto: NO ANCHOR")
+    clone = None
+    cf = _anchor_func("table has a protected metatable", index=1, exact=True)
+    if cf is not None:
+        try:
+            ct = str(ida_hexrays.decompile(cf.start_ea))
+        except Exception:
+            ct = ""
+        ci = ct.find("table has a protected metatable")
+        if ci >= 0:
+            cm2 = re.search(r"(sub_[0-9A-Fa-f]+)\(", ct[ci:])
+            if cm2:
+                clone = idc.get_name_ea_simple(cm2.group(1))
+    if clone is not None:
+        print("LuaHClone = REBASE(0x%X)" % (clone - BASE))
+    else:
+        print("LuaHClone: NO ANCHOR")
+    visit = None
+    vs = find_str('"0":{"type":"userdata","cat":0,"size":0}\n', exact=True)
+    if vs is not None:
+        vx = sorted(x.frm for x in idautils.XrefsTo(vs))
+        if vx:
+            prev = idc.prev_head(vx[0])
+            while prev != idc.BADADDR and prev > vx[0] - 0x40:
+                insn = ida_ua.insn_t()
+                if ida_ua.decode_insn(insn, prev) and insn.get_canon_mnem() == "call":
+                    ops = [insn[j] for j in range(6) if insn[j].type != ida_ua.o_void]
+                    if ops and ops[0].type == ida_ua.o_near:
+                        visit = ops[0].addr
+                    break
+                prev = idc.prev_head(prev)
+    if visit is not None:
+        print("LuaMVisitgco = REBASE(0x%X)" % (visit - BASE))
+    else:
+        print("LuaMVisitgco: NO ANCHOR")
 
 
 def _resolved(name):
@@ -3060,20 +3150,19 @@ def _call_counts(fstart):
 
 
 def _find_destroystring():
-    sets = []
+    votes = {}
+    totals = {}
     for f0 in _str_xref_funcs(NATIVE_STRING_ANCHORS["NativeDestroyString"]):
-        sets.append({c for c, n in _call_counts(f0).items() if n >= 8})
-    if not sets:
+        cands = [(c, n) for c, n in _call_counts(f0).items() if n >= 8]
+        if not cands:
+            continue
+        c, n = max(cands, key=lambda p: p[1])
+        votes[c] = votes.get(c, 0) + 1
+        totals[c] = totals.get(c, 0) + n
+    if not votes:
         return None
-    common = set.intersection(*sets)
-    if not common:
-        return None
-    best = None
-    for f0 in _str_xref_funcs(NATIVE_STRING_ANCHORS["NativeDestroyString"]):
-        for c, n in _call_counts(f0).items():
-            if c in common and (best is None or n > best[1]):
-                best = (c, n)
-    return best
+    best = max(votes, key=lambda k: (votes[k], totals[k]))
+    return (best, totals[best])
 
 
 def _find_verify():
@@ -3104,7 +3193,7 @@ def _find_key(verify):
             e = idc.get_name_ea_simple(m.group(1))
             if e == idc.BADADDR:
                 continue
-            blob = ida_bytes.get_bytes(e, 64) or b""
+            blob = ida_bytes.get_bytes(e, 0x400) or b""
             if _VERSION_TABLE_MARK.encode() in blob:
                 return callee
     return None
@@ -3652,7 +3741,7 @@ def _hpp_type(nsn, name):
     return _TYPE_BY_NAME.get(name, "std::size_t")
 
 
-_NO_REBASE = set(_TYPE_BY_NAME) | {"RequireBypass", "CapabilityStruct", "NativeVerifyFlagOffset"}
+_NO_REBASE = set(_TYPE_BY_NAME) | {"RequireBypass", "Capability", "CapabilityStruct", "NativeVerifyFlagOffset"}
 
 
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(\.\d+)?$")
