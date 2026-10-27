@@ -1195,30 +1195,54 @@ def _find_getglobalstate_by_shape(facet):
             seen.add(f.start_ea)
             if f.end_ea - f.start_ea > 0x100:
                 continue
-            items = list(idautils.FuncItems(f.start_ea))
-            add1a8 = False
-            call_after = False
-            add18 = False
-            xors = 0
-            for i, ea in enumerate(items):
-                m = idc.print_insn_mnem(ea)
-                if m == "add":
-                    for n in range(3):
-                        if idc.get_operand_type(ea, n) != ida_ua.o_imm:
-                            continue
-                        v = idc.get_operand_value(ea, n)
-                        if v == 0x1A8:
-                            add1a8 = True
-                            for j in range(i + 1, min(len(items), i + 3)):
-                                if idc.print_insn_mnem(items[j]) == "call":
-                                    call_after = True
-                        elif v == 0x18:
-                            add18 = True
-                elif m == "xor":
-                    xors += 1
-            if add1a8 and call_after and add18 and xors >= 2:
+            call_seen = False
+            xor_hits = 0
+            for ea in idautils.FuncItems(f.start_ea):
+                insn = ida_ua.insn_t()
+                if not ida_ua.decode_insn(insn, ea):
+                    continue
+                m = insn.get_canon_mnem()
+                if m == "call":
+                    call_seen = True
+                    continue
+                if not call_seen or m != "xor":
+                    continue
+                ops = [insn[t] for t in range(6) if insn[t].type != ida_ua.o_void]
+                if any(o.type in (ida_ua.o_displ, ida_ua.o_phrase) and o.reg == 0 for o in ops):
+                    xor_hits += 1
+            if xor_hits >= 2:
                 return f.start_ea
     return None
+
+
+def _find_newpage_by_shape(hcl):
+    lo = max(0, hcl - 0x100000)
+    hi = hcl + 0x100000
+    best = None
+    for fe in idautils.Functions(lo, hi):
+        f = ida_funcs.get_func(fe)
+        if f is None or not (0x60 <= f.end_ea - f.start_ea <= 0x100):
+            continue
+        seq = []
+        indirect = False
+        for ea in idautils.FuncItems(f.start_ea):
+            insn = ida_ua.insn_t()
+            if not ida_ua.decode_insn(insn, ea):
+                continue
+            m = insn.get_canon_mnem()
+            ops = [insn[t] for t in range(6) if insn[t].type != ida_ua.o_void]
+            if m == "call":
+                if ops and ops[0].type != ida_ua.o_near:
+                    indirect = True
+                    seq = []
+                continue
+            if indirect and m == "mov" and len(ops) == 2 and ops[0].type in (ida_ua.o_displ, ida_ua.o_phrase) and ops[0].reg == 0:
+                seq.append(ops[0].addr)
+        need = {0x20, 0x24, 0x10, 0x18, 0, 0x8, 0x28}
+        if indirect and need <= set(seq) and seq.index(0x20) < seq.index(0x10) and seq.index(0x28) < seq.index(0x24):
+            if best is None or abs(f.start_ea - hcl) < abs(best - hcl):
+                best = f.start_ea
+    return best
 
 
 def dump_engine():
@@ -1475,6 +1499,21 @@ def dump_engine():
                                         break
                                 if r2v is not None:
                                     break
+                        if m2 == "lea" and len(o2) == 2 and o2[0].type == ida_ua.o_reg and o2[0].reg == 2:
+                            if o2[1].type in (ida_ua.o_displ, ida_ua.o_phrase) and o2[1].reg == 7 and o2[1].addr == 1:
+                                for j in range(max(0, k - 8), k):
+                                    m3 = wl[j][1].get_canon_mnem()
+                                    o3 = [wl[j][1][t] for t in range(6) if wl[j][1][t].type != ida_ua.o_void]
+                                    if m3 == "test" and len(o3) == 2 and any(o.type == ida_ua.o_reg and o.reg == 7 for o in o3):
+                                        for jj in range(j + 1, min(k, j + 4)):
+                                            m4 = wl[jj][1].get_canon_mnem()
+                                            if m4 in ("jnz", "jne"):
+                                                r2v = 1
+                                                break
+                                    if r2v is not None:
+                                        break
+                            if r2v is not None:
+                                break
                     if r2v == 1:
                         cv[oo[0].addr] = cv.get(oo[0].addr, 0) + 1
                 if cv:
@@ -1666,48 +1705,7 @@ def dump_engine():
         print("HClone: NO CALL")
     ngc = None
     if hcl is not None:
-        hf = ida_funcs.get_func(hcl)
-        if hf is not None:
-            hl = []
-            for h in idautils.Heads(hf.start_ea, hf.end_ea):
-                ni = ida_ua.insn_t()
-                if ida_ua.decode_insn(ni, h):
-                    hl.append((h, ni))
-            cands = []
-            for n, (a, ni) in enumerate(hl):
-                if ni.get_canon_mnem() != "call":
-                    continue
-                oo = [ni[t] for t in range(6) if ni[t].type != ida_ua.o_void]
-                if not oo or oo[0].type != ida_ua.o_near:
-                    continue
-                r9set = False
-                spill = False
-                for k in range(max(0, n - 10), n):
-                    m2 = hl[k][1].get_canon_mnem()
-                    o2 = [hl[k][1][t] for t in range(6) if hl[k][1][t].type != ida_ua.o_void]
-                    if len(o2) == 2 and o2[0].type == ida_ua.o_reg and o2[0].reg == 9 and m2 in ("mov", "movzx", "lea"):
-                        r9set = True
-                    if m2 == "mov" and len(o2) == 2 and o2[0].type == ida_ua.o_displ and o2[0].reg == 4 and o2[0].addr == 0x20:
-                        spill = True
-                if r9set and spill:
-                    cands.append(oo[0].addr)
-            hit = []
-            for t in cands:
-                tf = ida_funcs.get_func(t)
-                if tf is None:
-                    continue
-                for h in idautils.Heads(tf.start_ea, tf.end_ea):
-                    ni = ida_ua.insn_t()
-                    if not ida_ua.decode_insn(ni, h):
-                        continue
-                    if ni.get_canon_mnem() != "call":
-                        continue
-                    oo = [ni[t] for t in range(6) if ni[t].type != ida_ua.o_void]
-                    if oo and oo[0].type == ida_ua.o_near and oo[0].addr in cands and oo[0].addr != t:
-                        hit.append(t)
-                        break
-            if len(hit) == 1:
-                ngc = hit[0]
+        ngc = _find_newpage_by_shape(hcl)
     if ngc is not None:
         print("NewPage = REBASE(0x%X)" % (ngc - BASE))
     else:
@@ -1980,40 +1978,41 @@ def dump_engine():
         print("GetPropertyData: NO STRING")
     cd = find_str("Could not find property descriptor", exact=True)
     if cd is not None:
-        cands = []
+        anchors = set()
         for x in idautils.XrefsTo(cd):
             f = ida_funcs.get_func(x.frm)
             if f:
-                cands.append(f)
-        cands.sort(key=lambda f: f.end_ea - f.start_ea)
-        desc = None
-        for cf in cands:
-            ea = cf.start_ea
-            while ea < cf.end_ea and desc is None:
-                insn = ida_ua.insn_t()
-                if not ida_ua.decode_insn(insn, ea):
-                    ea += 1
+                anchors.add(f.start_ea)
+        cands = set()
+        for af in anchors:
+            for ea in idautils.FuncItems(af):
+                if idc.print_insn_mnem(ea) != "call":
                     continue
-                for i in range(6):
-                    op = insn[i]
-                    if op.type == ida_ua.o_displ and op.addr == 0x1D8:
-                        sa = ea + insn.size
-                        for _ in range(10):
-                            s2 = ida_ua.insn_t()
-                            if not ida_ua.decode_insn(s2, sa):
-                                break
-                            if s2.get_canon_mnem() == "call":
-                                for k in range(6):
-                                    ok = s2[k]
-                                    if ok.type == ida_ua.o_near:
-                                        desc = ok.addr
-                                        break
-                                break
-                            sa += s2.size
-                        break
-                ea += insn.size if insn.size else 1
-            if desc is not None:
-                break
+                tf = ida_funcs.get_func(idc.get_operand_value(ea, 0))
+                if tf is None:
+                    continue
+                magic1 = False
+                magic2 = False
+                for h in idautils.FuncItems(tf.start_ea):
+                    insn = ida_ua.insn_t()
+                    if not ida_ua.decode_insn(insn, h):
+                        continue
+                    for k in range(6):
+                        op = insn[k]
+                        if op.type != ida_ua.o_imm:
+                            continue
+                        v = op.value & 0xFFFFFFFFFFFFFFFF
+                        if v == 0x9E3779B1 or v == 0xFFFFFFFF9E3779B1:
+                            magic1 = True
+                        elif v == 0x4D72EB980136AF5C:
+                            magic2 = True
+                if magic1 and magic2:
+                    cands.add(tf.start_ea)
+        desc = None
+        if len(cands) == 1:
+            desc = next(iter(cands))
+        elif cands:
+            desc = min(cands, key=lambda e: ida_funcs.get_func(e).end_ea - ida_funcs.get_func(e).start_ea)
         if desc is not None:
             print("GetPropertyDescriptor = REBASE(0x%X)" % (desc - BASE))
         else:
@@ -2879,6 +2878,116 @@ def _anchor_func(anchor, index=0, exact=True):
     return ida_funcs.get_func(xs[index])
 
 
+def _free_call_scale(lst, idx):
+    scale = 1
+    for k in range(idx - 1, max(0, idx - 12) - 1, -1):
+        a, ni = lst[k]
+        m = ni.get_canon_mnem()
+        if m == "call":
+            break
+        oo = [ni[t] for t in range(6) if ni[t].type != ida_ua.o_void]
+        if m == "imul" and len(oo) == 3 and oo[2].type == ida_ua.o_imm:
+            v = oo[2].value & 0xFFFFFFFF
+            if 0 < v < 0x10000:
+                scale *= v
+        elif m == "shl" and len(oo) == 2 and oo[1].type == ida_ua.o_imm:
+            v = oo[1].value & 63
+            if v < 32:
+                scale *= 1 << v
+        elif m == "lea" and len(oo) == 2:
+            t = idc.GetDisasm(a)
+            m2 = re.search(r"\*(\d+)\]", t)
+            if m2:
+                n = int(m2.group(1))
+                regs = re.findall(r"\br(?:ax|bx|cx|dx|si|di|bp|sp|8|9|1[0-5])\b", t.split("[", 1)[-1])
+                scale *= (n + 1) if len(regs) >= 2 else n
+    return scale
+
+
+def _find_freeproto_anchor():
+    hf = _anchor_func("Failed to create Lua state")
+    if hf is None:
+        return None
+    try:
+        txt = str(ida_hexrays.decompile(hf.start_ea))
+    except Exception:
+        return None
+    i = txt.find("Failed to create Lua state")
+    m = re.search(r"\b(byte|word|dword|qword)_([0-9A-Fa-f]+)\b", txt[i:]) if i >= 0 else None
+    if not m:
+        return None
+    g = idc.get_name_ea_simple("%s_%s" % (m.group(1), m.group(2)))
+    if g == idc.BADADDR:
+        return None
+    gx = sorted(x.frm for x in idautils.XrefsTo(g))
+    if len(gx) <= 1:
+        return None
+    sw = ida_funcs.get_func(gx[1])
+    if sw is None:
+        return None
+    try:
+        st = str(ida_hexrays.decompile(sw.start_ea))
+    except Exception:
+        return None
+    cm = re.search(r"case\s+0xF\s*:\s*(?:\n\s*)?(?:return\s+)?(sub_[0-9A-Fa-f]+)\(", st)
+    if not cm:
+        return None
+    free = idc.get_name_ea_simple(cm.group(1))
+    return None if free == idc.BADADDR else free
+
+
+def _find_freeproto():
+    anchor = _find_freeproto_anchor()
+    if anchor is not None:
+        return anchor
+    region = _lua_region()
+    if region is None:
+        throw = _resolved_value("LuaDThrow")
+        if throw is not None:
+            region = (throw - 0x200000, throw + 0x200000)
+    if region is None:
+        return None
+    best = None
+    for fstart in idautils.Functions():
+        if fstart < region[0] or fstart > region[1]:
+            continue
+        f = ida_funcs.get_func(fstart)
+        if f is None:
+            continue
+        size = f.end_ea - f.start_ea
+        if size < 0x80 or size > 0x800:
+            continue
+        lst = _insns(fstart)
+        recs = []
+        for idx, (ea, ni) in enumerate(lst):
+            if ni.get_canon_mnem() != "call":
+                continue
+            for t in range(6):
+                op = ni[t]
+                if op.type == ida_ua.o_void:
+                    continue
+                if op.type == ida_ua.o_near:
+                    recs.append((idx, ea, op.addr))
+                break
+        if len(recs) < 9 or len(recs) > 16:
+            continue
+        counts = {}
+        for _, _, tgt in recs:
+            counts[tgt] = counts.get(tgt, 0) + 1
+        helper, reps = max(counts.items(), key=lambda kv: kv[1])
+        if reps < 7 or len(counts) > 3:
+            continue
+        scales = [_free_call_scale(lst, i) for i, _, tgt in recs if tgt == helper]
+        if scales[:3] != [4, 8, 16]:
+            continue
+        if recs[-1][2] == helper:
+            continue
+        score = sum(1 for _, ni in lst if ni.get_canon_mnem() in ("xor", "sub"))
+        if best is None or (reps, score) > best[0]:
+            best = ((reps, score), fstart)
+    return best[1] if best else None
+
+
 def dump_luau_anchors():
     free = None
     hf = _anchor_func("Failed to create Lua state")
@@ -2903,6 +3012,8 @@ def dump_luau_anchors():
                         cm = re.search(r"case\s+0xF\s*:\s*(?:\n\s*)?(?:return\s+)?(sub_[0-9A-Fa-f]+)\(", st)
                         if cm:
                             free = idc.get_name_ea_simple(cm.group(1))
+    if free is None:
+        free = _find_freeproto()
     if free is not None:
         print("LuaFFreeProto = REBASE(0x%X)" % (free - BASE))
     else:
@@ -3193,7 +3304,7 @@ def _find_key(verify):
             e = idc.get_name_ea_simple(m.group(1))
             if e == idc.BADADDR:
                 continue
-            blob = ida_bytes.get_bytes(e, 0x400) or b""
+            blob = ida_bytes.get_bytes(e, 0x10000) or b""
             if _VERSION_TABLE_MARK.encode() in blob:
                 return callee
     return None
@@ -3202,6 +3313,8 @@ def _find_key(verify):
 
 IDENTITY_ANCHOR = "may only be instantiated by CoreScripts"
 _TLS_RESOLVE_RE = r"(sub_[0-9A-Fa-f]+)\(\s*(?:\(a1:\s*)?(qword_[0-9A-Fa-f]+)\s*\)"
+_TLS_NOARG_RE = r"(sub_[0-9A-Fa-f]+)\(\)\s*\+\s*(?:72|0x48)\b"
+_TLS_RET_RE = r"return\s+&((?:xmmword|qword|unk)_[0-9A-Fa-f]+);"
 
 
 def _find_identity():
@@ -3216,6 +3329,22 @@ def _find_identity():
             if res == idc.BADADDR or ptr == idc.BADADDR:
                 continue
             if ida_funcs.get_func(res) is not None and ida_funcs.get_func(ptr) is None:
+                return res, ptr
+        for m in re.finditer(_TLS_NOARG_RE, txt):
+            res = idc.get_name_ea_simple(m.group(1))
+            if res == idc.BADADDR or ida_funcs.get_func(res) is None:
+                continue
+            try:
+                rtxt = str(ida_hexrays.decompile(res))
+            except Exception:
+                continue
+            if "ThreadLocalStoragePointer" not in rtxt:
+                continue
+            rm = re.search(_TLS_RET_RE, rtxt)
+            if rm is None:
+                continue
+            ptr = idc.get_name_ea_simple(rm.group(1))
+            if ptr != idc.BADADDR and ida_funcs.get_func(ptr) is None:
                 return res, ptr
     return None, None
 
